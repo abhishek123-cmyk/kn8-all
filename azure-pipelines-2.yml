@@ -1,0 +1,25 @@
+trigger:
+- master  # triggers on master branch
+
+pool:
+  vmImage: ubuntu-latest  # Linux agent with PHP pre-installed
+
+steps:
+# Step 1: Check PHP version
+- script: php -v
+  displayName: 'Check PHP version'
+
+# Step 2: Test PHP script
+- script: |
+    echo "Running PHP script test..."
+    php -r 'echo "Hello Facebook from PHP!\n";'
+  displayName: 'Run PHP script test'
+
+# Step 3: Publish build artifacts
+- task: PublishBuildArtifacts@1
+  inputs:
+    pathToPublish: '$(Build.SourcesDirectory)'  # publish the entire repo
+    artifactName: 'drop'
+    publishLocation: 'Container'
+  displayName: 'Publish build artifacts'
+
