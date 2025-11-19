@@ -1,0 +1,29 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  name: Default
+
+steps:
+- task: UsePHPVersion@0
+  inputs:
+    versionSpec: '8.2'  # or your desired PHP version
+  displayName: 'Use PHP 8.2'
+
+- script: php -v
+  displayName: 'Check PHP version'
+
+- script: |
+    echo "Running PHP app test"
+    php -r 'echo "Hello Facebook from PHP!";'
+  displayName: 'Test PHP script'
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    pathToPublish: '$(Build.SourcesDirectory)'
+    artifactName: 'drop'
