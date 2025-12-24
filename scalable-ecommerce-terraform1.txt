@@ -1,0 +1,615 @@
+scalable-ecommerce-terraform/
+│
+├── provider.tf
+├── variables.tf
+├── vpc.tf
+├── security_groups.tf
+├── launch_template.tf
+├── alb.tf
+├── autoscaling.tf
+├── cloudwatch.tf
+├── outputs.tf
+└── README.md
+🔹 Step 1: Provider Configuration (provider.tf)
+hcl
+Copy code
+provider "aws" {
+  region = "us-east-1"
+}
+🔹 Step 2: Variables (variables.tf)
+hcl
+Copy code
+variable "vpc_cidr" {
+  default = "10.0.0.0/16"
+}
+
+variable "public_subnets" {
+  default = ["10.0.1.0/24", "10.0.2.0/24"]
+}
+
+variable "instance_type" {
+  default = "t2.micro"
+}
+
+variable "key_name" {
+  description = "EC2 key pair name"
+}
+🔹 Step 3: VPC & Subnets (vpc.tf)
+hcl
+Copy code
+resource "aws_vpc" "main" {
+  cidr_block = var.vpc_cidr
+  tags = { Name = "ecommerce-vpc" }
+}
+
+resource "aws_subnet" "public" {
+  count                   = 2
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.public_subnets[count.index]
+  availability_zone       = element(["us-east-1a", "us-east-1b"], count.index)
+  map_public_ip_on_launch = true
+  tags = { Name = "public-subnet-${count.index}" }
+}
+
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+}
+
+resource "aws_route_table" "public_rt" {
+  vpc_id = aws_vpc.main.id
+}
+
+resource "aws_route" "internet_access" {
+  route_table_id         = aws_route_table.public_rt.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.igw.id
+}
+
+resource "aws_route_table_association" "public_assoc" {
+  count          = 2
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public_rt.id
+}
+🔹 Step 4: Security Groups (security_groups.tf)
+hcl
+Copy code
+resource "aws_security_group" "alb_sg" {
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "ec2_sg" {
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+🔹 Step 5: Launch Template (launch_template.tf)
+hcl
+Copy code
+resource "aws_launch_template" "web_lt" {
+  name_prefix   = "ecommerce-lt"
+  image_id      = "ami-0c02fb55956c7d316"
+  instance_type = var.instance_type
+  key_name      = var.key_name
+
+  network_interfaces {
+    security_groups = [aws_security_group.ec2_sg.id]
+  }
+
+  user_data = base64encode(<<EOF
+#!/bin/bash
+yum install -y httpd
+systemctl start httpd
+echo "<h1>Scalable E-Commerce App</h1>" > /var/www/html/index.html
+EOF
+  )
+}
+🔹 Step 6: Application Load Balancer (alb.tf)
+hcl
+Copy code
+resource "aws_lb" "alb" {
+  name               = "ecommerce-alb"
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = aws_subnet.public[*].id
+}
+
+resource "aws_lb_target_group" "tg" {
+  name     = "ecommerce-tg"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id
+}
+
+resource "aws_lb_listener" "listener" {
+  load_balancer_arn = aws_lb.alb.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.tg.arn
+  }
+}
+🔹 Step 7: Auto Scaling Group (autoscaling.tf)
+hcl
+Copy code
+resource "aws_autoscaling_group" "asg" {
+  desired_capacity = 2
+  max_size         = 4
+  min_size         = 1
+  vpc_zone_identifier = aws_subnet.public[*].id
+  target_group_arns   = [aws_lb_target_group.tg.arn]
+
+  launch_template {
+    id      = aws_launch_template.web_lt.id
+    version = "$Latest"
+  }
+
+  health_check_type = "ELB"
+}
+🔹 Step 8: CloudWatch Scaling & Alarms (cloudwatch.tf)
+h
+Copy code
+resource "aws_autoscaling_policy" "scale_out" {
+  name                   = "scale-out"
+  adjustment_type        = "ChangeInCapacity"
+  scaling_adjustment     = 1
+  autoscaling_group_name = aws_autoscaling_group.asg.name
+}
+
+resource "aws_cloudwatch_metric_alarm" "cpu_high" {
+  alarm_name          = "cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 120
+  statistic           = "Average"
+  threshold           = 70
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.asg.name
+  }
+
+  alarm_actions = [aws_autoscaling_policy.scale_out.arn]
+}
+🔹 Step 9: Outputs (outputs.tf)
+hcl
+Copy code
+output "alb_dns_name" {
+  value = aws_lb.alb.dns_name
+}
+🚀 Deploy Commands
+bash
+Copy code
+terraform init
+terraform plan
+terraform apply
+📌 GitHub Steps
+bash
+Copy code
+git init
+git add .
+git commit -m "Scalable E-Commerce App using Terraform"
+git branch -M main
+git remote add origin https://github.com/yourusername/scalable-ecommerce-terraform.git
+git push -u origin main
+✅ What You Achieved
+✔ Auto Scaling
+✔ Load Balancing
+✔ Self-healing EC2
+✔ Monitoring & Alerts
+✔ Production-grade architecture
+
+If you want next:
+
+📦 S3 backend + DynamoDB locking
+
+🔐 HTTPS (ACM + ALB)
+
+🐳 ECS / EKS version
+
+📊 Advanced CloudWatch dashboards
+
+Just tell me 👍
+
+
+You said:
+this command where i need to run 
+
+ChatGPT said:
+Good question 👍
+Ye Terraform commands aapko local machine ke terminal (ya Cloud shell) me run karne hote hain.
+
+Main step-by-step clearly bata raha hoon 👇
+
+✅ Option 1: Local Laptop / PC (Most Common)
+1️⃣ Prerequisites (pehle check karo)
+Terraform installed
+
+bash
+Copy code
+terraform -version
+AWS CLI installed
+
+bash
+Copy code
+aws --version
+AWS credentials configured
+
+bash
+Copy code
+aws configure
+(Ye access key, secret key, region puchega)
+
+2️⃣ Project Folder me jao
+bash
+Copy code
+cd scalable-ecommerce-terraform
+👉 IMPORTANT:
+Yahi folder hona chahiye jisme saare .tf files hain.
+
+3️⃣ Terraform commands yahin run karo
+bash
+Copy code
+terraform init
+📌 Provider & plugins download karega
+
+bash
+Copy code
+terraform plan
+📌 Kya resources create honge dikhaega
+
+bash
+Copy code
+terraform apply
+📌 Infrastructure create karega
+(Type yes when asked)
+
+4️⃣ Website Access karo
+Apply complete hone ke baad:
+
+bash
+Copy code
+terraform output
+Output me ALB DNS name milega, usse browser me open karo 🌐
+
+✅ Option 2: AWS CloudShell (No install needed)
+AWS Console login
+
+Top right me CloudShell open karo
+
+Commands run karo:
+
+bash
+Copy code
+git clone https://github.com/yourusername/scalable-ecommerce-terraform.git
+cd scalable-ecommerce-terraform
+terraform init
+terraform apply
+❌ Common Mistakes (avoid karo)
+❌ Random folder me terraform run karna
+❌ AWS credentials configure na karna
+❌ .tf files different folders me rakhna
+
+🧠 Simple Rule Yaad Rakho
+Terraform commands hamesha usi folder me run hote hain jahan .tf files hoti hain
+
+Agar chaho, main:
+
+🧪 Black Friday traffic test ka method
+
+🧹 terraform destroy safely
+
+📁 .gitignore & README.md
+
+bhi bana deta hoon.
+
+
+You said:
+git init
+git add .
+git commit -m "Scalable E-Commerce App using Terraform"
+git branch -M main
+git remote add origin https://github.com/yourusername/scalable-ecommerce-terraform.git
+git push -u origin main
+
+
+this command where i need to run
+
+ChatGPT said:
+Ye Git commands bhi aapko local machine ke terminal me hi run karne hote hain — usi project folder ke andar jahan aapki Terraform files hain.
+
+Main bilkul clear steps me batata hoon 👇
+
+📍 Exactly KAHAN run karna hai
+1️⃣ Terminal / Command Prompt open karo
+Windows: Git Bash / PowerShell
+
+Mac / Linux: Terminal
+
+2️⃣ Project directory me jao
+bash
+Copy code
+cd scalable-ecommerce-terraform
+👉 Yahan aapko ye files dikhni chahiye:
+
+python-repl
+Copy code
+provider.tf
+vpc.tf
+alb.tf
+autoscaling.tf
+...
+Agar ye files dikh rahi hain → aap sahi jagah ho ✅
+
+3️⃣ Ab Git commands run karo (exact yahin)
+bash
+Copy code
+git init
+git add .
+git commit -m "Scalable E-Commerce App using Terraform"
+git branch -M main
+git remote add origin https://github.com/yourusername/scalable-ecommerce-terraform.git
+git push -u origin main
+⚠️ Important cheezein dhyaan me rakho
+🔹 GitHub pe pehle repo create hona chahiye
+GitHub login → New Repository
+
+Repo name: scalable-ecommerce-terraform
+
+README auto-create mat karo (empty rakho)
+
+🔹 URL replace karo
+bash
+Copy code
+https://github.com/yourusername/scalable-ecommerce-terraform.git
+⬇️
+
+bash
+Copy code
+https://github.com/<YOUR_GITHUB_USERNAME>/scalable-ecommerce-terraform.git
+🔹 Git install hona chahiye
+Check:
+
+bash
+Copy code
+git --version
+🧠 One-line Rule yaad rakho
+Git commands hamesha us folder me run hote hain jahan project files hoti hain
+
+✅ After Successful Push
+GitHub repo me:
+
+Saari .tf files dikhengi
+
+Commit message dikhega
+
+Project share kar sakte ho 🎉
+
+Agar chaho, main:
+
+📄 Professional README.md
+
+🙈 .gitignore (Terraform safe)
+
+🧹 Sensitive files protection
+
+bhi bana deta hoon.
+
+
+You said:
+cloud shell me aws kaise login kare kya command hoga
+
+ChatGPT said:
+Achha sawal 👍
+AWS CloudShell me login karne ke liye koi command nahi hoti.
+CloudShell already logged-in AWS account ke saath open hota hai.
+
+Main step-by-step simple language me batata hoon 👇
+
+✅ AWS CloudShell me login ka correct process
+🔹 Step 1: AWS Console login
+Browser open karo
+
+https://aws.amazon.com/console/
+
+Apna AWS account username + password se login karo
+
+🔹 Step 2: CloudShell open karo
+AWS Console ke top-right corner me ye icon hota hai:
+
+scss
+Copy code
+>_   (CloudShell)
+Uspe click karo ✅
+
+⏳ 10–20 seconds me terminal open ho jayega
+
+👉 Bas itna hi — CloudShell ready 🎉
+
+✅ CloudShell me AWS CLI already configured hota hai
+Check karne ke liye command run karo:
+
+bash
+Copy code
+aws sts get-caller-identity
+Agar output me:
+
+Account ID
+
+User / Role
+
+dikh raha hai → AWS login successful ✅
+
+❌ Ye commands CloudShell me run karne ki zarurat NAHI hoti
+bash
+Copy code
+aws configure
+🚫 Ye local machine ke liye hota hai, CloudShell ke liye nahi
+
+✅ Ab Terraform kaise use kare CloudShell me
+1️⃣ Terraform check karo
+bash
+Copy code
+terraform -version
+(AWS CloudShell me Terraform usually pre-installed hota hai)
+
+2️⃣ GitHub repo clone karo
+bash
+Copy code
+git clone https://github.com/yourusername/scalable-ecommerce-terraform.git
+cd scalable-ecommerce-terraform
+3️⃣ Terraform run karo
+bash
+Copy code
+terraform init
+terraform plan
+terraform apply
+🧠 Short Summary (yaad rakhne layak)
+Jagah	AWS Login kaise
+Local laptop	aws configure
+AWS CloudShell	Console login → CloudShell open
+
+Agar chaho, next main bata sakta hoon:
+
+🔐 IAM Role vs IAM User (interview question)
+
+⚠️ CloudShell limits
+
+🧹 terraform destroy CloudShell se safely
+
+Bas bolo 👍
+
+
+You said:
+account id nhi dikha
+
+ChatGPT said:
+Theek hai 👍
+Agar aws sts get-caller-identity run karne par Account ID nahi dikh raha, to usually CloudShell properly authorized nahi hua hota.
+
+Step-by-step fix karte hain 👇
+
+✅ Step 1: Confirm CloudShell AWS CLI ka response
+CloudShell me ye command run karo:
+
+bash
+Copy code
+aws sts get-caller-identity
+❌ Agar aisa error aa raha hai:
+Unable to locate credentials
+
+AccessDenied
+
+ExpiredToken
+
+👉 Matlab permissions ya session issue hai.
+
+✅ Step 2: CloudShell restart karo (most common fix)
+CloudShell ke right side me ⚙️ (Actions / Settings) pe click karo
+
+Restart CloudShell select karo
+
+CloudShell band hone do, phir dubara open hone do
+
+Phir command run karo:
+
+bash
+Copy code
+aws sts get-caller-identity
+👉 80% cases me yahin fix ho jata hai ✅
+
+✅ Step 3: Check correct AWS Region
+CloudShell kisi aur region me open ho sakta hai.
+
+Run karo:
+
+bash
+Copy code
+aws configure list
+Agar region empty hai, manually set karo (temporary):
+
+bash
+Copy code
+export AWS_DEFAULT_REGION=us-east-1
+Phir dobara check:
+
+bash
+Copy code
+aws sts get-caller-identity
+✅ Step 4: IAM Permissions check (IMPORTANT)
+Aap jis AWS account se login ho, us user/role ke paas ye permission honi chahiye:
+
+sts:GetCallerIdentity
+
+Usually ye permissions me hota hai:
+
+AdministratorAccess
+
+PowerUserAccess
+
+ya custom role
+
+👉 Agar aap company / college AWS account use kar rahe ho, to admin se confirm karna padega.
+
+✅ Step 5: Try simple AWS command
+bash
+Copy code
+aws ec2 describe-regions
+Agar ye kaam kar raha hai → AWS access OK hai ✅
+Agar error → permissions issue ❌
+
+🧠 Short Decision Table
+Situation	Solution
+Account ID blank	CloudShell restart
+AccessDenied	IAM permission issue
+Region empty	Export region
+All AWS cmds fail	Wrong login / restricted account
+
+✅ Once it works (expected output)
+json
+Copy code
+{
+  "UserId": "AROA...",
+  "Account": "123456789012",
+  "Arn": "arn:aws:sts::123456789012:assumed-role/..."
+}
+Agar chaho, next main:
+
+🔐 Exact IAM policy bata doon Terraform ke liye
+
+🧪 ASG scaling test karna sikha doon
+
+🧹 Clean-up safely (terraform destroy)
+
+Bas batao 👍
+
+
+You said:
