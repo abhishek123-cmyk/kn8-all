@@ -1,19 +1,61 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
 trigger:
-- master
+- development
 
+# ⏰ Daily 1:30 AM
+schedules:
+- cron: "30 1 * * *"
+  displayName: Node Nightly Build
+  branches:
+    include:
+      - development
+  always: true
+
+# -------------------------
+# PARAMETERS
+# -------------------------
+parameters:
+- name: nodeVersion
+  type: string
+  default: '20'
+
+# -------------------------
+# VARIABLES
+# -------------------------
+variables:
+  NODE_ENV: 'development'
+  APP_NAME: 'node-app'
+
+# -------------------------
+# AGENT (Same as Java)
+# -------------------------
 pool:
-  vmImage: ubuntu-latest
+  name: agentjan10
+  demands:
+    - node
 
+# =========================
+# STEPS
+# =========================
 steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+- script: |
+    echo "Setting Node Version"
+    node -v
+    npm -v
+  displayName: "Verify Node & NPM"
 
 - script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+    echo "Installing dependencies"
+    npm install
+    npm run build --if-present
+    npm test --if-present
+  displayName: "NPM Build & Test"
+  env:
+    NODE_ENV: $(NODE_ENV)
+
+- task: PublishPipelineArtifact@1
+  inputs:
+    targetPath: '.'
+    artifact: 'node-package'
+    publishLocation: 'pipeline'
+  displayName: "Publish Node Artifact"
+
