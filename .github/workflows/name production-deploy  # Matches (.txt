@@ -1,0 +1,39 @@
+name: production-deploy  # Matches (?i)deploy|production-deploy|publish|release
+ 
+on:
+
+  workflow_dispatch:     # Allows manual trigger for your friend
+
+  push:
+
+    branches:
+
+      - main             # Matches (?i)prod|production|main
+
+      - production
+ 
+jobs:
+
+  deploy-job:
+
+    name: "Run Production Publish" # Also matches the deployment regex
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Code
+
+        uses: actions/checkout@v4
+ 
+      - name: Simulate Deployment
+
+        run: |
+
+          echo "Starting deployment process..."
+
+          sleep 5
+
+          echo "Deployment to production successful!"
+
+ 
